@@ -57,7 +57,7 @@ contract OneInchExchange is Ownable, Pausable {
     function discountedSwap(
         IOneInchCaller caller,
         SwapDescription calldata desc,
-        IOneInchCaller.CallDescription[] calldata calls
+        bytes calldata data
     )
         external
         payable
@@ -75,24 +75,26 @@ contract OneInchExchange is Ownable, Pausable {
         }
 
         // solhint-disable-next-line avoid-low-level-calls
-        (bool success, bytes memory data) = address(this).delegatecall(abi.encodeWithSelector(this.swap.selector, caller, desc, calls));
+        (bool success, bytes memory returnData) = address(this).delegatecall(abi.encodeWithSelector(this.swap.selector, caller, desc, data));
         if (success) {
-            returnAmount = abi.decode(data, (uint256));
+            returnAmount = abi.decode(returnData, (uint256));
         } else {
             if (msg.value > 0) {
                 msg.sender.transfer(msg.value);
             }
-            emit Error(RevertReasonParser.parse(data, "Swap failed: "));
+            emit Error(RevertReasonParser.parse(returnData, "Swap failed: "));
         }
 
         (IChi chi, uint256 amount) = caller.calculateGas(initialGas.sub(gasleft()), desc.flags, msg.data.length);
-        chi.freeFromUpTo(chiSource, amount);
+        if (amount > 0) {
+            chi.freeFromUpTo(chiSource, amount);
+        }
     }
 
     function swap(
         IOneInchCaller caller,
         SwapDescription calldata desc,
-        IOneInchCaller.CallDescription[] calldata calls
+        bytes calldata data
     )
         external
         payable
@@ -100,7 +102,7 @@ contract OneInchExchange is Ownable, Pausable {
         returns (uint256 returnAmount)
     {
         require(desc.minReturnAmount > 0, "Min return should not be 0");
-        require(calls.length > 0, "Call data should exist");
+        require(data.length > 0, "data should be not zero");
 
         uint256 flags = desc.flags;
         IERC20 srcToken = desc.srcToken;
@@ -121,13 +123,18 @@ contract OneInchExchange is Ownable, Pausable {
         uint256 initialSrcBalance = (flags & _PARTIAL_FILL != 0) ? srcToken.uniBalanceOf(msg.sender) : 0;
         uint256 initialDstBalance = dstToken.uniBalanceOf(dstReceiver);
 
-        caller.makeCalls{value: msg.value}(calls);
+        // solhint-disable-next-line avoid-low-level-calls
+        (bool success, bytes memory result) = address(caller).call{value: msg.value}(abi.encodePacked(caller.callBytes.selector, data));
+        if (!success) {
+            revert(RevertReasonParser.parse(result, "OneInchCaller callBytes failed: "));
+        }
 
         uint256 spentAmount = desc.amount;
         returnAmount = dstToken.uniBalanceOf(dstReceiver).sub(initialDstBalance);
 
         if (flags & _PARTIAL_FILL != 0) {
             spentAmount = initialSrcBalance.add(desc.amount).sub(srcToken.uniBalanceOf(msg.sender));
+            require(returnAmount > 0, "Return amount is zero");
             require(returnAmount.mul(desc.amount) >= desc.minReturnAmount.mul(spentAmount), "Return amount is not enough");
         } else {
             require(returnAmount >= desc.minReturnAmount, "Return amount is not enough");
@@ -165,7 +172,12 @@ contract OneInchExchange is Ownable, Pausable {
             // solhint-disable-next-line avoid-low-level-calls
             (bool success, bytes memory result) = address(token).call(abi.encodeWithSelector(IERC20Permit.permit.selector, permit));
             if (!success) {
-                revert(RevertReasonParser.parse(result, "Permit call failed: "));
+                string memory reason = RevertReasonParser.parse(result, "Permit call failed: ");
+                if (token.allowance(msg.sender, address(this)) < amount) {
+                    revert(reason);
+                } else {
+                    emit Error(reason);
+                }
             }
         }
 
@@ -176,7 +188,7 @@ contract OneInchExchange is Ownable, Pausable {
         token.uniTransfer(msg.sender, amount);
     }
 
-    function pause() external onlyOwner {
+    function shutdown() external onlyOwner {
         _pause();
     }
 }

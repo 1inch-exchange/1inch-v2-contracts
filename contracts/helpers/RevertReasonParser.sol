@@ -37,7 +37,7 @@ library RevertReasonParser {
             return string(abi.encodePacked(prefix, "Panic(", _toHex(code), ")"));
         }
 
-        return string(abi.encodePacked(prefix, "Unknown()"));
+        return string(abi.encodePacked(prefix, "Unknown(", _toHex(data), ")"));
     }
 
     function _toHex(uint256 value) private pure returns(string memory) {
@@ -45,7 +45,7 @@ library RevertReasonParser {
     }
 
     function _toHex(bytes memory data) private pure returns(string memory) {
-        bytes memory alphabet = "0123456789abcdef";
+        bytes16 alphabet = 0x30313233343536373839616263646566;
         bytes memory str = new bytes(2 + data.length * 2);
         str[0] = "0";
         str[1] = "x";
